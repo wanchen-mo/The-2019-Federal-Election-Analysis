@@ -1,0 +1,256 @@
+---
+title: "Untitled"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r setup, include=FALSE, message=FALSE}
+library(tidyverse)
+library(lme4)
+library(broom)
+```
+
+```{r setup, include=FALSE, message=FALSE}
+# Read the cleaned survey and census data
+survey_data <- read_csv("clean_surveydata.csv")
+census_data <- read_csv("gss_2017.csv")
+census_data <- census_data %>% select(age, sex, education, province)
+```
+
+ 
+```{r setup, include=FALSE, message=FALSE}
+# Displaying survey data
+#using this function to reorder and organize the bar graphs
+bts <- function(x) {factor(x, levels = names(sort(table(x))))}
+survey_data <- survey_data %>% filter(cps19_gender == "A woman" | cps19_gender == "A man")
+
+ggplot(survey_data, aes(bts(cps19_education))) + geom_bar()+ coord_flip()
+ggplot(survey_data, aes(bts(cps19_province)))+ geom_bar()+ coord_flip()
+count(survey_data, cps19_age)
+count(survey_data, cps19_gender)
+count(survey_data, cps19_votechoice)
+
+```
+```{r setup, include=FALSE, message=FALSE}
+ggplot(census_data, aes(bts(education))) + geom_bar()+ coord_flip()
+ggplot(census_data, aes(bts(province)))+ geom_bar()+ coord_flip()
+count(census_data, sex)
+
+```
+
+```{r setup, include=FALSE, message=FALSE}
+#Mapping survey data and census data:
+#survey data
+#Age
+survey_data <- survey_data %>% mutate(age_group = case_when(cps19_age <= 25 ~'25 or yonger',
+                                               cps19_age > 25 & cps19_age <= 45 ~ '26 to 45',
+                                               cps19_age > 45 & cps19_age <= 65 ~ '46 to 65',
+                                               cps19_age > 65 & cps19_age <= 75 ~ '66 to 75',
+                                               cps19_age > 75 ~ 'older than 75'))
+census_data <- census_data %>% mutate(age_group = case_when(age <= 25 ~'25 or yonger',
+                                               age > 25 & age <= 45 ~ '26 to 45',
+                                               age > 45 & age <= 65 ~ '46 to 65',
+                                               age > 65 & age <= 75 ~ '66 to 75',
+                                               age > 75 ~ 'older than 75'))
+
+#Gender
+
+survey_data <- survey_data %>% mutate(gender = case_when(cps19_gender == "A woman" ~ "Female",
+                                                         cps19_gender == "A man" ~ "Male"))
+
+
+#Education
+Some_university_college <- c("Some technical, community college, CEGEP, College Classique", "Some university")
+Above_Bachelorsdegree <- c("Master's degree", "Professional degree or doctorate")
+High_school <- c(	"Completed secondary/ high school", "Some secondary/ high school")
+
+Less_than_highschool <- c("Completed elementary school", "Some elementary school", 
+                             "Don't know/Prefer not to answer", "No schooling")
+
+
+survey_data <- survey_data %>% mutate(education = 
+                                        case_when(cps19_education == "Bachelor's degree" ~ "Bachelor's degree",
+                                                  cps19_education == "Completed technical, community college, CEGEP, College Classique" ~ "College", cps19_education %in% High_school ~ "High school",
+                                                  cps19_education %in% Some_university_college ~ 
+                                                    "Some university/college",
+                                                  cps19_education %in% Above_Bachelorsdegree ~ 
+                                                    "Above Bachelor's degree",
+                                                  cps19_education %in% Less_than_highschool ~
+                                                    "Less than high school"))
+
+census_data <- census_data %>% filter(!is.na(education))
+
+census_data <- census_data %>% mutate(education = case_when(education == "High school diploma or a high school equivalency certificate" ~ "High school", education == "College, CEGEP or other non-university certificate or di..." 
+                                                            ~ "College",education == "Bachelor's degree (e.g. B.A., B.Sc., LL.B.)" ~ "Bachelor's degree",education == "Less than high school diploma or its equivalent" ~ 
+                                                              "Less than high school",education == "University certificate, diploma or degree above the bach..." ~"Above Bachelor's degree", 
+                                                            education == "Trade certificate or diploma" ~ "College", 
+                                                            education == "University certificate or diploma below the bachelor's level" ~ "Some university/college"))
+
+names(census_data)[names(census_data) == "sex"] <- "gender"
+names(survey_data)[names(survey_data) == "cps19_province"] <- "province"
+ 
+#mutate two new variables in survey data
+survey_data$Liberal_or_others = ifelse(survey_data$cps19_votechoice == "Liberal Party","1", "0")
+survey_data$Conservative_or_others = ifelse(survey_data$cps19_votechoice == "Conservative Party","1", "0")
+
+```
+
+```{r setup, include=FALSE, message=FALSE}
+# Reducing variables in dataset for modelling
+final_survey_data <- survey_data %>% select(age_group, gender, education, 
+                                            province,cps19_votechoice, Liberal_or_others, Conservative_or_others)
+final_census_data <- census_data %>% select(age_group, gender, education, province)
+final_survey_data <- final_survey_data %>% na.omit(cps19_votechoice)
+summary(final_survey_data)
+```
+
+```{r setup, include=FALSE, message=FALSE}
+#Creating cell variable
+final_survey_data$cell<-paste(final_survey_data$education, final_survey_data$gender)
+
+final_census_data$cell<-paste(final_census_data$education, final_census_data$gender)
+
+
+s.factor<-c("cell", "age_group","gender","education","province", "cps19_votechoice", 
+            "Liberal_or_others", "Conservative_or_others")
+final_survey_data[s.factor] <- lapply(final_survey_data[s.factor], factor) 
+c.factor<-c("cell", "age_group","gender","education","province")
+final_census_data[c.factor] <- lapply(final_census_data[c.factor], factor) 
+
+```
+
+```{r setup, include=FALSE, message=FALSE}
+###  Multi-level regression
+library(lme4)
+library(ROCR)
+library(tidybayes)
+library(caret)
+library(pROC)
+library(tidyverse)
+library(survey)
+
+count(final_survey_data,Liberal_or_others )
+count(final_survey_data,Conservative_or_others )
+
+###  Model1 for Liberal Party and Conservative Party without Cell
+lib_model1 <- glm(Liberal_or_others ~ age_group + gender + education + province,
+                     data = final_survey_data,family="binomial")
+
+con_model1 <- glm(Conservative_or_others ~ age_group + gender + education + province,
+                     data = final_survey_data,family="binomial")
+
+p_lib_model1 <- predict(lib_model1,type=c('response'))
+p_con_model1 <- predict(con_model1,type=c('response'))
+
+summary(lib_model1)
+summary(con_model1)
+lib_model1_AIC <-AIC(lib_model1,k=2)
+lib_model1_BIC <- BIC(lib_model1)
+lib_model1_AICnBIC <- c(lib_model1_AIC,lib_model1_BIC)
+lib_model1_AICnBIC
+
+con_model1_AIC <-AIC(con_model1,k=2)
+con_model1_BIC <- BIC(con_model1)
+con_model1_AICnBIC <- c(con_model1_AIC,con_model1_BIC)
+con_model1_AICnBIC
+
+final_model1 <-ifelse(p_lib_model1 >= p_con_model1,"Liberal Party", "Conservative Party")
+result_model1 <-cbind(final_survey_data,final_model1)
+
+#roc curves
+roc_lib_model1 <- roc(result_model1$Liberal_or_others, p_lib_model1)
+auc(roc_lib_model1)
+plot(roc_lib_model1, auc.polygon=TRUE, print.auc = TRUE,asp = NA)
+
+roc_con_model1 <- roc(result_model1$Conservative_or_others, p_con_model1)
+auc(roc_con_model1)
+plot(roc_con_model1, auc.polygon=TRUE, print.auc = TRUE,asp = NA)
+
+
+
+```
+
+
+```{r setup, include=FALSE, message=FALSE}
+###  Model2 for Liberal Party and Conservative Party with Cell
+
+lib_model2 <- glmer(Liberal_or_others~(1|cell)+ age_group + province ,
+                     data = final_survey_data, family=binomial)
+
+con_model2 <- glmer(Conservative_or_others~(1|cell)+ age_group + province ,
+                     data = final_survey_data, family=binomial)
+
+
+
+summary(lib_model2)
+ranef(lib_model2)
+plot(lib_model2)
+summary(con_model2)
+ranef(con_model2)
+plot(con_model2)
+
+p_lib_model2<-predict(lib_model2,type=c('response'))
+p_con_model2<-predict(con_model2,type=c('response'))
+
+final_model2 <-ifelse(p_lib_model2 >= p_con_model2, "Liberal Party", "Conservative Party")
+result_model2 <-cbind(final_survey_data,final_model2)
+
+
+roc_lib_model2 <- roc(result_model2 $Liberal_or_others, p_lib_model2)
+auc(roc_lib_model2)
+plot(roc_lib_model2, auc.polygon=TRUE, print.auc = TRUE,asp = NA)
+
+roc_con_model2 <- roc(result_model2 $Conservative_or_others, p_con_model2)
+auc(roc_con_model2)
+plot(roc_con_model2, auc.polygon=TRUE, print.auc = TRUE,asp = NA)
+
+```
+
+
+```{r setup, include=FALSE, message=FALSE}
+##  Post-Stratification
+#Testing the model by using the census data
+p_vote_lib <-predict(lib_model2, final_census_data[,c("age_group","gender","education","province",
+                                      "cell")],type="response")
+
+p_vote_con <-predict(con_model2, final_census_data[,c("age_group","gender","education","province",
+                                      "cell")],type="response")
+
+predictions<-ifelse(p_vote_lib >= p_vote_con,"Liberal Party","Conservative Party")
+
+```
+```{r setup, include=FALSE, message=FALSE}
+# Post-stratification based on education and gender
+post_census <- final_census_data %>% count(cell, province, age_group) %>% group_by(cell)
+
+post_census$estimate <- predict(lib_model2, post_census, type='response')
+post_census <- post_census %>% mutate(cell_pro = n/ length(final_census_data$cell))
+head(post_census)
+post_census <- post_census %>% mutate(alp_predict = estimate*cell_pro)
+#probability for liberal party to win the election
+sum(post_census$alp_predict)
+
+
+post_census$estimate <- predict(con_model2, post_census, type='response')
+post_census <- post_census %>% mutate(cell_pro = n/ length(final_census_data$cell))
+head(post_census)
+post_census <- post_census %>% mutate(alp_predict = estimate*cell_pro)
+#probability for liberal party to win the election
+sum(post_census$alp_predict)
+
+```
+## Level 1: Individual Level:
+Liberal Party: $$ log(\frac{y_{jLib}}{1-y_{jLib}}) = \beta_{0jLib}+\beta_{age}*x_{age} + \beta_{province}*x_{province}  + \epsilon$$
+
+Conservative Party: $$ log(\frac{y_{jcon}}{1-y_{jcon}}) = \beta_{0jcon}+\beta_{age}*x_{age} + \beta_{province}*x_{province}  + \epsilon$$
+
+## Level 2: Group Level:
+
+Liberal Party: $$ \beta_{0jLib} = r_{00} + r_{0jLib}*W_{jLib} +u_{0jLib}$$
+
+
+Conservative Party: $$ \beta_{0jcon} = r_{00} + r_{0jcon}*W_{con} +u_{0jcon}$$
